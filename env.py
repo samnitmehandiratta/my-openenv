@@ -180,25 +180,26 @@ class PhysicsSurrogateEnv:
 
         metrics = compute_metrics(pred, ground_truth)
 
+        if metrics["mse"] <= self.target_mse:
+            raw_score = 0.99
+        elif metrics["mse"] <= self.target_mse * 3:
+            raw_score = max(
+                0.3, 1.0 - (metrics["mse"] - self.target_mse) / (self.target_mse * 2)
+            )
+        elif metrics["correlation"] > 0.7:
+            raw_score = 0.5
+        elif metrics["correlation"] > 0.3:
+            raw_score = 0.3
+        else:
+            raw_score = 0.1
+
+        score = float(np.clip(raw_score, 0.01, 0.99))
         reward = PhysicsReward(
-            score=0.0,
+            score=score,
             mse=metrics["mse"],
             correlation=metrics["correlation"],
             error=None,
         )
-
-        if metrics["mse"] <= self.target_mse:
-            reward.score = 1.0
-        elif metrics["mse"] <= self.target_mse * 3:
-            reward.score = max(
-                0.3, 1.0 - (metrics["mse"] - self.target_mse) / (self.target_mse * 2)
-            )
-        elif metrics["correlation"] > 0.7:
-            reward.score = 0.5
-        elif metrics["correlation"] > 0.3:
-            reward.score = 0.3
-        else:
-            reward.score = 0.1
 
         self.last_reward = reward
         self.reward_history.append(reward.score)
@@ -211,27 +212,27 @@ class PhysicsSurrogateEnv:
     def _calculate_reward(self) -> PhysicsReward:
         if self.current_prediction is None:
             return PhysicsReward(
-                score=0.0, mse=1.0, correlation=0.0, error="No prediction made"
+                score=0.01, mse=1.0, correlation=0.0, error="No prediction made"
             )
 
         target_idx = min(self.current_step, len(self.ground_truth_trajectory) - 1)
         ground_truth = self.ground_truth_trajectory[target_idx]
         metrics = compute_metrics(self.current_prediction, ground_truth)
 
-        score = 0.0
         if metrics["mse"] <= self.target_mse:
-            score = 1.0
+            raw_score = 0.99
         elif metrics["mse"] <= self.target_mse * 3:
-            score = max(
+            raw_score = max(
                 0.3, 1.0 - (metrics["mse"] - self.target_mse) / (self.target_mse * 2)
             )
         elif metrics["correlation"] > 0.7:
-            score = 0.5
+            raw_score = 0.5
         elif metrics["correlation"] > 0.3:
-            score = 0.3
+            raw_score = 0.3
         else:
-            score = 0.1
+            raw_score = 0.1
 
+        score = float(np.clip(raw_score, 0.01, 0.99))
         return PhysicsReward(
             score=score, mse=metrics["mse"], correlation=metrics["correlation"]
         )
@@ -260,7 +261,7 @@ class PhysicsSurrogateEnv:
             "task": self.task_name,
             "step": self.current_step,
             "done": self.done,
-            "last_reward": self.last_reward.score if self.last_reward else 0.0,
+            "last_reward": self.last_reward.score if self.last_reward else 0.01,
             "mse": self.last_reward.mse if self.last_reward else None,
         }
 
