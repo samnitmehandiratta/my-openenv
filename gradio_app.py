@@ -31,4 +31,4 @@ with gr.Blocks(title="Physics Surrogate") as demo:
     gr.Markdown("- POST /step - Take action with action dict")
     gr.Markdown("- GET /state - Get current state")
 
-demo.launch(server_port=7861)
+demo.launch(server_port=7860, server_host="0.0.0.0")
