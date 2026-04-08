@@ -21,7 +21,9 @@ with gr.Blocks(title="Physics Surrogate") as demo:
     gr.Markdown("# Physics Surrogate Environment")
     gr.Markdown("OpenEnv API is running at POST /reset and POST /step endpoints")
     gr.Markdown("### Test API")
-    gr.Button("Test /reset", onclick=reset_and_show)
+    btn = gr.Button("Test /reset")
+    output = gr.Textbox(label="API Response")
+    btn.click(fn=reset_and_show, outputs=output)
     gr.Markdown("This environment uses real physics data from The Well dataset.")
 
     gr.Markdown("## API Endpoints")
