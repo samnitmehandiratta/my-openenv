@@ -1,30 +1,28 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any, Union
-import numpy as np
+from typing import List, Optional, Dict, Any
 
 
-class PhysicsMetadata(BaseModel):
-    dataset: str
-    resolution: List[int]
-    field_type: str
-    time_step: int
-
-
-class PhysicsObservation(BaseModel):
-    initial_state: Union[List[List[float]], List[float]]  # 2D grid or flattened
-    metadata: PhysicsMetadata
+class SREObservation(BaseModel):
+    alerts: List[str]
+    logs: List[str]
+    metrics: Dict[str, Any]
     task_description: str
-    hints: List[str] = []
+    step: int
+    additional_info: Optional[Dict[str, Any]] = None
 
 
-class PhysicsAction(BaseModel):
-    predicted_field: Optional[Union[List[List[float]], List[float]]] = None
-    num_steps: int = 1
-    done: bool = False
+class SREAction(BaseModel):
+    action_type: str  # "investigate", "diagnose", "resolve", "done"
+    service: Optional[str] = None
+    severity: Optional[str] = None  # "critical", "high", "medium", "low"
+    root_cause: Optional[str] = None
+    affected_services: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
 
 
-class PhysicsReward(BaseModel):
+class SREReward(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
-    mse: float
-    correlation: float
-    error: Optional[str] = None
+    severity_correct: bool = False
+    root_cause_score: float = 0.0
+    action_score: float = 0.0
+    feedback: str = ""

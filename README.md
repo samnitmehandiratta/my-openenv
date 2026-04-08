@@ -1,150 +1,95 @@
 ---
-title: Physics Surrogate Environment
-emoji: 🔬
-colorFrom: blue
-colorTo: purple
+title: SRE Incident Triage
+emoji: 🚨
+colorFrom: red
+colorTo: orange
 sdk: docker
 pinned: false
 tags:
   - openenv
 ---
 
-# Physics Surrogate Environment
+# SRE Incident Triage Environment
 
-An OpenEnv environment for physics surrogate modeling using **real data from The Well** (NeurIPS 2024). Agents learn to predict future states of physical systems from initial conditions.
+An OpenEnv environment where an AI agent acts as an on-call SRE engineer triaging real production incidents. Given alerts, logs, and metrics, the agent must investigate services, identify the root cause, and recommend the correct remediation.
 
 ## Overview
 
-This environment uses **actual physics simulation data** from The Well dataset - a 15TB collection of machine learning datasets for spatiotemporal physical systems. The environment loads real HDF5 files containing:
-- **Turbulent Radiative Layer** simulations (128x384 resolution)
-- **Density** and **Pressure** fields
-- 101 timesteps per trajectory
-
-## Real Data Source
-
-- **Dataset**: [turbulent_radiative_layer_2D](https://github.com/Polymathicai/the_well/tree/main/the_well/datasets/turbulent_radiative_layer_2D)
-- **Source**: Polymathic AI, The Well (NeurIPS 2024)
-- **Resolution**: 128 × 384 pixels
-- **Timesteps**: 101 per trajectory
-- **Physics**: Radiative layer simulations with varying cooling parameters
+On-call SRE triage is one of the most cognitively demanding real-world tasks — reading noisy signals, finding causal chains across services, and acting under time pressure. This environment models three realistic incident archetypes with increasing complexity.
 
 ## Tasks
 
-| Task | Difficulty | Prediction Horizon | Field |
-|------|------------|-------------------|-------|
-| fluid_short_prediction | Easy | 5 timesteps | density |
-| fluid_medium_prediction | Medium | 20 timesteps | pressure |
-| turbulence_prediction | Hard | 50 timesteps | density |
+| Task | Difficulty | Incident Type |
+|------|-----------|---------------|
+| `cpu_spike` | Easy | Traffic spike overwhelming api-server, no rate limiting |
+| `cascading_failure` | Medium | Bad deployment config causing DB exhaustion → cascade |
+| `memory_leak` | Hard | Shared logging middleware leak causing multi-service OOM |
 
 ## Action Space
 
-Agents provide predictions for future states:
+Actions are JSON objects with `action_type`:
 
-- `predicted_field`: The predicted 2D scalar field (128x384)
-- `num_steps`: Number of timesteps to predict
-- `done`: Whether to finish the episode
+```json
+{"action_type": "investigate", "service": "api-server"}
+
+{"action_type": "diagnose", "severity": "high", "root_cause": "...", "affected_services": ["api-server"]}
+
+{"action_type": "resolve", "severity": "critical", "root_cause": "...", "affected_services": ["payment-service"], "recommended_action": "rollback payment-service to v2.3.0"}
+
+{"action_type": "done"}
+```
 
 ## Observation Space
 
-- `initial_state`: Current 2D field (normalized 0-1)
-- `metadata`: Dataset name, resolution, field type, time step
-- `task_description`: Description of the prediction task
-- `hints`: Guidance for the agent
+```json
+{
+  "alerts": ["HIGH CPU ALERT: api-server at 95%", "..."],
+  "logs": ["2024-01-15 14:23:02 WARN api-server: queue depth 847", "..."],
+  "metrics": {"api-server": {"cpu_percent": 95, "error_rate": 2.3}, "..."},
+  "task_description": "...",
+  "step": 1,
+  "additional_info": null
+}
+```
 
 ## Reward Function
 
-Score (0.0-1.0) based on:
-- MSE between prediction and ground truth (real physics data)
-- Pearson correlation coefficient
-- Partial credit for reasonable predictions
+| Component | Weight | Signal |
+|-----------|--------|--------|
+| Severity classification | 0.30 | Correct critical/high/medium/low |
+| Root cause keywords | up to 0.45 | Partial credit per relevant keyword |
+| Affected services listed | 0.05 | Any services identified |
+| Recommended action | up to 0.25 | Keywords matching correct fix |
 
-## Installation
+Scores are always in `(0.01, 0.99)`. Investigate actions return small rewards (0.05-0.15) to encourage exploration without over-rewarding.
 
-```bash
-pip install -r requirements.txt
-```
-
-**Requirements:**
-- pydantic, openai, numpy, h5py
-- the_well package for data handling
-
-## Data Setup
-
-The environment expects the data file at:
-```
-./the_well_data/data/test/turbulent_radiative_layer_tcool_0.03.hdf5
-```
-
-Download from HuggingFace:
-```python
-from huggingface_hub import hf_hub_download
-path = hf_hub_download(
-    repo_id='polymathic-ai/turbulent_radiative_layer_2D',
-    filename='data/test/turbulent_radiative_layer_tcool_0.03.hdf5',
-    repo_type='dataset',
-    local_dir='./the_well_data'
-)
-```
-
-## Running Locally
-
-```python
-from env import PhysicsSurrogateEnv
-from models import PhysicsAction
-import numpy as np
-
-env = PhysicsSurrogateEnv(task_name="fluid_short_prediction")
-obs = env.reset()
-
-# Make prediction
-pred = np.random.rand(128, 384).tolist()
-action = PhysicsAction(predicted_field=pred, num_steps=1)
-obs, reward, done, info = env.step(action)
-
-print(f"Reward: {reward.score}")
-env.close()
-```
-
-## Running Inference
+## Setup
 
 ```bash
-# Set API key
-export OPENROUTER_API_KEY=your_key
-
-# Run inference
-python inference.py
-```
-
-Environment variables:
-- `OPENROUTER_API_KEY` - API key for LLM
-- `API_BASE_URL` - API endpoint (default: https://openrouter.ai/v1)
-- `MODEL_NAME` - Model to use (default: google/gemma-2-2b-it:free)
-
-## Baseline Scores
-
-| Task | Score |
-|------|-------|
-| fluid_short_prediction | 0.8-1.0 |
-| fluid_medium_prediction | 0.6-1.0 |
-| turbulence_prediction | 0.8-1.0 |
-
-## Docker
-
-```bash
-docker build -t physics-surrogate .
-docker run -p 7860:7860 physics-surrogate
+docker build -t sre-triage .
+docker run -p 7860:7860 \
+  -e HF_TOKEN=your_token \
+  -e API_BASE_URL=https://router.huggingface.co/v1 \
+  -e MODEL_NAME=Qwen/Qwen2.5-72B-Instruct \
+  sre-triage
 ```
 
 ## API Endpoints
 
-When running as a server:
-- `GET /` - Health check
-- `POST /reset` - Reset environment
-- `POST /step` - Take an action
-- `GET /state` - Get current state
+- `POST /reset` — Start new episode (optionally pass `{"task": "cpu_spike"}`)
+- `POST /step` — Take an action (`{"action": {"action_type": "investigate", "service": "api-server"}}`)
+- `GET /state` — Current environment state
 
-## References
+## Baseline Scores
 
-- [The Well Dataset](https://github.com/polymathicai/the_well) - Polymathic AI
-- [Paper](https://arxiv.org/abs/2412.00568) - NeurIPS 2024
-- [HuggingFace Dataset](https://huggingface.co/datasets/polymathic-ai/turbulent_radiative_layer_2D)
+| Task | Score | Notes |
+|------|-------|-------|
+| cpu_spike | ~0.70 | Easy — clear traffic + rate limit signals |
+| cascading_failure | ~0.55 | Medium — requires tracing deployment diff |
+| memory_leak | ~0.40 | Hard — shared component across services |
+
+## Running Inference
+
+```bash
+HF_TOKEN=hf_... python inference.py
+```
