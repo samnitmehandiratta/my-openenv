@@ -8,4 +8,5 @@ env/
 .env
 
 # OS
-.DS_Store
+.DS_Storesecrets.env
+.env

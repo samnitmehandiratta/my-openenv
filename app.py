@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Physics Surrogate Environment - OpenEnv Server
-Runs FastAPI server with Gradio UI mounted
+Unified server for Physics Surrogate Environment
+Runs FastAPI for API endpoints and mounts Gradio UI
 """
 import os
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import uvicorn
-from gradio.routes import mount_gradio_app
 
 from env import PhysicsSurrogateEnv
 from models import PhysicsAction
@@ -100,17 +98,21 @@ async def state():
     return env.state()
 
 
-# Mount Gradio app for UI
+# Mount Gradio UI
 try:
     import gradio as gr
     import numpy as np
     import json
+    from gradio.routes import mount_gradio_app
+
+    gradio_env = None
+    gradio_current_task = "fluid_short_prediction"
 
     def reset_env(task_name):
-        global env, current_task_name
-        current_task_name = task_name
-        env = PhysicsSurrogateEnv(task_name=task_name)
-        obs = env.reset()
+        global gradio_env, gradio_current_task
+        gradio_current_task = task_name
+        gradio_env = PhysicsSurrogateEnv(task_name=task_name)
+        obs = gradio_env.reset()
         field = np.array(obs.initial_state)
         return (
             field.tolist(),
@@ -120,18 +122,18 @@ try:
         )
 
     def take_action(num_steps=1, done=False):
-        global env
-        if env is None:
-            reset_env(current_task_name)
+        global gradio_env
+        if gradio_env is None:
+            reset_env(gradio_current_task)
 
         action = PhysicsAction(predicted_field=None, num_steps=num_steps, done=done)
-        obs, reward, done, info = env.step(action)
+        obs, reward, done, info = gradio_env.step(action)
         field = np.array(obs.initial_state)
 
         return (
             field.tolist(),
             f"Score: {reward.score:.4f}\nMSE: {reward.mse:.6f}\nCorrelation: {reward.correlation:.4f}",
-            f"Step {env.current_step}/{env.max_steps}",
+            f"Step {gradio_env.current_step}/{gradio_env.max_steps}",
             "Done!" if done else f"Episode in progress",
         )
 
@@ -199,13 +201,12 @@ try:
         5. Score is based on prediction accuracy vs ground truth
         """)
 
-    # Mount Gradio app at /gradio path
     app = mount_gradio_app(app, gradio_app, path="/gradio")
+    print("Gradio UI mounted at /gradio")
     
-except ImportError:
-    pass  # Gradio not available, API-only mode
+except ImportError as e:
+    print(f"Gradio not available: {e}")
 
 
-# For local testing
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=7860)
