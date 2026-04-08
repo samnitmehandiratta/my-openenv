@@ -46,25 +46,28 @@ Strategy: investigate 1-2 suspicious services first, then resolve with a specifi
 Respond with ONLY a JSON object - no explanation, no markdown."""
 
 
-def build_user_prompt(obs) -> str:
+def build_user_prompt(obs, history: list) -> str:
     metrics_str = json.dumps(obs.metrics, indent=2)
     alerts_str = "\n".join(f"  - {a}" for a in obs.alerts)
-    logs_str = "\n".join(f"  {l}" for l in obs.logs[-20:])
-    extra = ""
-    if obs.additional_info:
-        extra = f"\nADDITIONAL INFO:\n{json.dumps(obs.additional_info, indent=2)}"
+    logs_str = "\n".join(f"  {l}" for l in obs.logs[-25:])
+
+    history_str = ""
+    if history:
+        history_str = "\nACTIONS TAKEN SO FAR:\n" + "\n".join(
+            f"  Step {i+1}: {h}" for i, h in enumerate(history)
+        ) + "\n"
 
     return f"""TASK: {obs.task_description}
 STEP: {obs.step}
-
+{history_str}
 ALERTS:
 {alerts_str}
 
-RECENT LOGS:
+RECENT LOGS (including investigation results):
 {logs_str}
 
 METRICS:
-{metrics_str}{extra}
+{metrics_str}
 
 What action do you take? Respond with ONLY a JSON object."""
 
@@ -85,11 +88,12 @@ def run_task(client: OpenAI, task_name: str) -> dict:
     env = SRETriageEnv(task_name=task_name)
     obs = env.reset()
     rewards = []
+    history = []
 
     print(f"[START] task={task_name} env={BENCHMARK} model={MODEL_NAME}", flush=True)
 
     for step_num in range(1, MAX_STEPS + 1):
-        user_prompt = build_user_prompt(obs)
+        user_prompt = build_user_prompt(obs, history)
 
         try:
             completion = client.chat.completions.create(
@@ -109,6 +113,9 @@ def run_task(client: OpenAI, task_name: str) -> dict:
         action = parse_action(raw)
         obs, reward, done, info = env.step(action)
         rewards.append(round(reward.score, 2))
+
+        # Build history entry so LLM knows what it already tried
+        history.append(f"{action.action_type}({action.service or ''}) -> score={reward.score:.2f}, feedback: {reward.feedback}")
 
         error_str = reward.feedback if reward.feedback else "null"
         print(
