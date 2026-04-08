@@ -11,4 +11,4 @@ EXPOSE 7860
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "gradio_app.py"]
+CMD ["python", "server.py"]

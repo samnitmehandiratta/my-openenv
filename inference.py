@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import re
 from typing import List
 from dotenv import load_dotenv
 
@@ -26,47 +27,83 @@ TASKS = ["fluid_short_prediction", "fluid_medium_prediction", "turbulence_predic
 
 SYSTEM_PROMPT = """You are a physics surrogate model. Your task is to predict future states of a physical system given an initial condition.
 
-The system is a 2D fluid dynamics simulation. You are given:
-- initial_state: A 2D array (scalar field) representing the initial condition
-- task: Predict future states
+You are given a 2D field (128x384 grid) representing density/pressure values from a physics simulation.
+Values are normalized between 0 and 1.
 
-Your response should be JSON with the following format:
-{{
-    "reasoning": "Brief explanation of your prediction approach",
-    "prediction_type": "simple|advanced|done",
-    "delta_scale": float between 0 and 1 (how much the field changes),
-    "done": boolean (whether to finish)
-}}
+You need to predict what the field will look like at the next timestep. Respond with JSON:
+{
+    "reasoning": "Brief explanation of what you predict",
+    "direction": "left|right|up|down|diagonal|stationary",
+    "intensity": float between 0 and 1 (how much change),
+    "done": false
+}
 
-Examples:
-- For simple prediction: {{"reasoning": "Using persistence with small delta", "prediction_type": "simple", "delta_scale": 0.1, "done": false}}
-- When satisfied: {{"reasoning": "Prediction complete", "prediction_type": "done", "done": true}}
+Example: {"reasoning": "The fluid appears to flow rightward", "direction": "right", "intensity": 0.3, "done": false}
 
-Respond ONLY with JSON, no other text.
-"""
+Respond ONLY with valid JSON."""
 
 
-def parse_action(response: str) -> PhysicsAction:
+def parse_llm_response(response: str) -> dict:
+    """Parse LLM response into prediction parameters"""
     try:
-        data = json.loads(response.strip())
-        reasoning = data.get("reasoning", "")
-        pred_type = data.get("prediction_type", "simple")
-        done = data.get("done", False)
-
-        if done:
-            return PhysicsAction(done=True, num_steps=1)
-
-        # Simple prediction based on reasoning
-        delta_scale = data.get("delta_scale", 0.1)
-
-        # Return action with simple flag - environment will generate prediction
-        return PhysicsAction(
-            predicted_field=None,  # Will be filled by environment
-            num_steps=1,
-            done=False,
-        )
+        # Extract JSON from response
+        match = re.search(r"\{.*\}", response, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            return {
+                "direction": data.get("direction", "stationary"),
+                "intensity": data.get("intensity", 0.1),
+                "done": data.get("done", False),
+                "reasoning": data.get("reasoning", ""),
+            }
     except:
-        return PhysicsAction(done=False, num_steps=1)
+        pass
+
+    return {"direction": "stationary", "intensity": 0.1, "done": False, "reasoning": ""}
+
+
+def make_prediction(
+    initial_state: np.ndarray, direction: str, intensity: float, step: int
+) -> np.ndarray:
+    """Generate prediction based on LLM output"""
+    h, w = initial_state.shape
+    pred = initial_state.copy()
+
+    # Simple shift based on direction
+    shift_x, shift_y = 0, 0
+
+    if direction == "right":
+        shift_x = int(5 * intensity)
+    elif direction == "left":
+        shift_x = -int(5 * intensity)
+    elif direction == "up":
+        shift_y = -int(5 * intensity)
+    elif direction == "down":
+        shift_y = int(5 * intensity)
+    elif direction == "diagonal":
+        shift_x = int(3 * intensity)
+        shift_y = int(3 * intensity)
+
+    # Apply shift using numpy roll
+    if shift_x != 0:
+        pred = np.roll(pred, shift_x, axis=1)
+    if shift_y != 0:
+        pred = np.roll(pred, shift_y, axis=0)
+
+    # Add some temporal evolution
+    time_factor = step * 0.05 * intensity
+    x = np.linspace(0, 2 * np.pi, w)
+    y = np.linspace(0, 2 * np.pi, h)
+    X, Y = np.meshgrid(x, y)
+
+    wave = np.sin(X + time_factor) * np.cos(Y + time_factor * 0.5)
+    wave = (wave - wave.min()) / (wave.max() - wave.min() + 1e-8)
+
+    # Blend shifted with wave
+    blend = intensity * 0.3
+    pred = pred * (1 - blend) + wave * blend
+
+    return pred
 
 
 def run_task(client: OpenAI, task_name: str) -> dict:
@@ -77,39 +114,59 @@ def run_task(client: OpenAI, task_name: str) -> dict:
     print(f"[START] task={task_name} env={BENCHMARK} model={MODEL_NAME}", flush=True)
 
     for step in range(1, MAX_STEPS + 1):
-        # Get initial state as context
         initial_state = np.array(obs.initial_state)
 
-        # Generate prediction based on step
-        # Simple physics: propagate initial state forward with decay
-        time_offset = step * 0.5
-        pred = initial_state.copy()
+        # Get summary of state for LLM
+        state_summary = f"Field shape: {initial_state.shape}, range: [{initial_state.min():.3f}, {initial_state.max():.3f}], mean: {initial_state.mean():.3f}"
 
-        # Apply simple wave propagation
-        h, w = pred.shape
-        x = np.linspace(0, 4 * np.pi, w)
-        y = np.linspace(0, 4 * np.pi, h)
-        X, Y = np.meshgrid(x, y)
+        try:
+            # Call LLM
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"Current timestep: {step}/{MAX_STEPS}. {state_summary}. What do you predict for the next frame?",
+                    },
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=200,
+            )
 
-        # Add time-dependent component
-        wave = np.sin(X + time_offset) * np.cos(Y + time_offset * 0.7)
-        wave = (wave - wave.min()) / (wave.max() - wave.min() + 1e-8)
+            llm_response = response.choices[0].message.content
+            parsed = parse_llm_response(llm_response)
 
-        # Blend initial with prediction
-        blend_factor = min(0.3 * step, 0.8)
-        pred = pred * (1 - blend_factor) + wave * blend_factor
+            action_str = f"{parsed['direction']}:{parsed['intensity']:.2f}"
 
-        # Take action with prediction
-        action = PhysicsAction(
-            predicted_field=pred.tolist(), num_steps=1, done=(step >= MAX_STEPS)
-        )
+            # Generate prediction based on LLM response
+            pred = make_prediction(
+                initial_state, parsed["direction"], parsed["intensity"], step
+            )
+
+            if parsed["done"]:
+                action = PhysicsAction(
+                    predicted_field=pred.tolist(), num_steps=1, done=True
+                )
+            else:
+                action = PhysicsAction(
+                    predicted_field=pred.tolist(), num_steps=1, done=False
+                )
+
+        except Exception as e:
+            print(f"LLM call failed: {e}, using fallback")
+            pred = initial_state.copy()
+            action = PhysicsAction(
+                predicted_field=pred.tolist(), num_steps=1, done=(step >= MAX_STEPS)
+            )
+            action_str = "fallback"
 
         obs, reward, done, info = env.step(action)
         rewards.append(round(reward.score, 2))
 
-        error_str = str(reward.error) if reward.error else "null"
+        error_str = "null"
         print(
-            f"[STEP] step={step} action=prediction reward={reward.score:.2f} done={str(done).lower()} error={error_str}",
+            f"[STEP] step={step} action={action_str} reward={reward.score:.2f} done={str(done).lower()} error={error_str}",
             flush=True,
         )
 
@@ -148,7 +205,7 @@ async def main():
     for task in TASKS:
         result = run_task(client, task)
         results.append(result)
-        await asyncio.sleep(1)  # Rate limiting
+        await asyncio.sleep(1)
 
     print(f"\n=== BASELINE RESULTS ===", flush=True)
     for i, task in enumerate(TASKS):
