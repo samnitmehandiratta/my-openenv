@@ -3,10 +3,10 @@ title: Physics Surrogate Environment
 emoji: 🔬
 colorFrom: blue
 colorTo: purple
-sdk: gradio
-sdk_version: "6.11.0"
-app_file: gradio_app.py
+sdk: docker
 pinned: false
+tags:
+  - openenv
 ---
 
 # Physics Surrogate Environment
